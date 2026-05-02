@@ -42,9 +42,9 @@ jobs:
           path: dist\HDF5Viewer_Windows_Installer.exe
 
       - name: Create GitHub Release and upload assets
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          # Use the tag name as the release name; fall back gracefully on manual runs
           name: ${{ github.ref_name }}
           generate_release_notes: true
           files: |
