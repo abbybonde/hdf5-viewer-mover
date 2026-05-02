@@ -472,20 +472,25 @@ class MainWindow(QMainWindow):
     @pyqtSlot(QPoint)
     def _handle_tree_menu(self, pos: QPoint) -> None:
         menu = QMenu(self)
-        index = self.tree_view_file.indexAt(pos)
+        proxy_index = self.tree_view_file.indexAt(pos)
 
-        if not index.isValid():
+        if not proxy_index.isValid():
             return
+
+        # Always work from column 0 so data() returns the name, not the type label
+        index = proxy_index.sibling(proxy_index.row(), 0)
 
         is_root_file = index.parent().data() is None
         obj_type = index.sibling(index.row(), 1).data() or ""  # "Group", "Dataset", or "HDF5 File"
 
         if is_root_file:
+            # Map to source model row so removeRow works correctly even when a filter is active
+            source_row = self.tree_model_file_proxy.mapToSource(index).row()
             act_close = QAction("Close File", self)
             act_reload = QAction("Reload File", self)
             menu.addAction(act_close)
             menu.addAction(act_reload)
-            act_close.triggered.connect(lambda: self.tree_model_file.removeRow(index.row()))
+            act_close.triggered.connect(lambda: self.tree_model_file.removeRow(source_row))
             act_reload.triggered.connect(lambda: self._handle_reload_from_index(index))
             menu.addSeparator()
             act_new_grp = QAction("New Group…", self)
@@ -538,6 +543,12 @@ class MainWindow(QMainWindow):
                 self.tree_model_file.removeRow(i)
                 break
         self._open_file(file_path)
+        # Expand the re-added file node so datasets are visible immediately
+        new_source_row = self.tree_model_file.rowCount() - 1
+        if new_source_row >= 0:
+            source_idx = self.tree_model_file.index(new_source_row, 0)
+            proxy_idx = self.tree_model_file_proxy.mapFromSource(source_idx)
+            self.tree_view_file.expand(proxy_idx)
 
     def _run_copy_move(self, index: QModelIndex, operation: str) -> None:
         """Common logic for both Copy and Move operations."""
@@ -611,14 +622,17 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Rename", "Name must not be empty.")
             return
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        success = False
         try:
             rename_hdf5_object(file_path, obj_path, new_name)
+            success = True
         except Exception as exc:
             logging.error(f"Rename failed: {exc}")
             QMessageBox.critical(self, "Rename Failed", str(exc))
         finally:
             QApplication.restoreOverrideCursor()
-        self._reload_file(file_path)
+        if success:
+            self._reload_file(file_path)
 
     @pyqtSlot()
     def _handle_delete(self, index: QModelIndex) -> None:
@@ -635,14 +649,17 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        success = False
         try:
             delete_hdf5_object(file_path, obj_path)
+            success = True
         except Exception as exc:
             logging.error(f"Delete failed: {exc}")
             QMessageBox.critical(self, "Delete Failed", str(exc))
         finally:
             QApplication.restoreOverrideCursor()
-        self._reload_file(file_path)
+        if success:
+            self._reload_file(file_path)
 
     @pyqtSlot()
     def _handle_new_group(self, index: QModelIndex) -> None:
@@ -657,14 +674,17 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "New Group", "Name must not be empty.")
             return
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        success = False
         try:
             create_hdf5_group(file_path, parent_path, name)
+            success = True
         except Exception as exc:
             logging.error(f"Create group failed: {exc}")
             QMessageBox.critical(self, "New Group Failed", str(exc))
         finally:
             QApplication.restoreOverrideCursor()
-        self._reload_file(file_path)
+        if success:
+            self._reload_file(file_path)
 
     @pyqtSlot()
     def _handle_new_dataset(self, index: QModelIndex) -> None:
@@ -684,14 +704,17 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "New Dataset", f"Invalid shape: {exc}")
             return
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        success = False
         try:
             create_hdf5_dataset(file_path, parent_path, name, shape, dlg.dtype, dlg.fill_value)
+            success = True
         except Exception as exc:
             logging.error(f"Create dataset failed: {exc}")
             QMessageBox.critical(self, "New Dataset Failed", str(exc))
         finally:
             QApplication.restoreOverrideCursor()
-        self._reload_file(file_path)
+        if success:
+            self._reload_file(file_path)
 
     @pyqtSlot()
     def _handle_copy_to(self, index: QModelIndex) -> None:
