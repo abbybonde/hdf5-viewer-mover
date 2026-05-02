@@ -1,4 +1,4 @@
-name: Build & Release Windows Installer
+name: Build & Release Windows EXE
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build-windows:
-    name: Build Windows installer
+    name: Build Windows EXE
     runs-on: windows-latest
 
     steps:
@@ -26,26 +26,19 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Build executable with PyInstaller
+      - name: Build single-file executable with PyInstaller
         run: python pyinstaller.py
 
-      # Inno Setup is pre-installed on GitHub-hosted Windows runners
-      - name: Build Windows installer with Inno Setup
-        run: iscc windows\compile.iss
-
-      # The installer ends up at dist\HDF5Viewer_Windows_Installer.exe
-      # PyInstaller also produces dist\main\main.exe (standalone exe inside folder)
-      - name: Upload installer artifact
+      # PyInstaller --onefile produces dist\main.exe
+      - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
         with:
-          name: windows-installer
-          path: dist\HDF5Viewer_Windows_Installer.exe
+          name: HDF5Viewer-Windows
+          path: dist\main.exe
 
-      - name: Create GitHub Release and upload assets
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Create GitHub Release and upload EXE
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ github.ref_name }}
           generate_release_notes: true
-          files: |
-            dist\HDF5Viewer_Windows_Installer.exe
+          files: dist\main.exe
