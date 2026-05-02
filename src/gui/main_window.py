@@ -59,6 +59,7 @@ from PyQt6.QtWidgets import (
 
 from src.gui.about_page import AboutPage
 from src.gui.copy_move_dialog import CopyMoveDialog
+from src.gui.slice_control import SliceControlWidget
 from src.gui.table_model import DataTable, TableModel
 from src.gui.utilities_dialogs import NewDatasetDialog, NewGroupDialog, RenameDialog
 from src.img.img_path import img_path
@@ -152,10 +153,14 @@ class MainWindow(QMainWindow):
         lyt_filter.addWidget(self.btn_filter_case)
         lyt_filter.addWidget(self.le_filter)
 
+        self.slice_control = SliceControlWidget()
+        self.slice_control.sliceChanged.connect(lambda: self._plot_data(self.cb_plot_type.currentText()))
+
         lyt_file_tree = QVBoxLayout()
         lyt_file_tree.addWidget(self.tree_view_file)
         lyt_file_tree.addLayout(lyt_filter)
         lyt_file_tree.addLayout(lyt_plot_type)
+        lyt_file_tree.addWidget(self.slice_control)
 
         wgt_total = QHBoxLayout()
         wgt_total.addLayout(lyt_file_tree)
@@ -305,7 +310,8 @@ class MainWindow(QMainWindow):
                 data = np.array([name for name in file[self.cur_obj_path]])
                 data_type = H5DatasetType.String
             if isinstance(h5_obj, h5py.Dataset):
-                data = np.array(file[self.cur_obj_path])
+                slice_tuple = self.slice_control.slice_tuple
+                data = np.array(h5_obj[slice_tuple] if slice_tuple else h5_obj)
                 if plot_type and plot_type != "Auto":
                     data_type = H5DatasetType.from_string(plot_type)
                 else:
@@ -415,6 +421,7 @@ class MainWindow(QMainWindow):
             self.table_model_dataset.resetData()
             self.table_model_dataset.appendRow(["Name", parents_list[0]])
             self.table_model_dataset.appendRow(["File Size", file_size_to_str(parents_list[0])])
+            self.slice_control.reset()
             return
 
         with h5py.File(parents_list[0], "r") as file:
@@ -423,6 +430,7 @@ class MainWindow(QMainWindow):
             if isinstance(h5_obj, h5py.Group):
                 self.table_model_dataset.resetData()
                 self.table_model_dataset.appendRow(["Name", str(h5_obj.name)])
+                self.slice_control.reset()
 
             elif isinstance(h5_obj, h5py.Dataset):
                 self.table_model_dataset.resetData()
@@ -431,6 +439,8 @@ class MainWindow(QMainWindow):
 
                 for attribute, value in h5_obj.attrs.items():
                     self.table_model_dataset.appendRow([attribute, str(value)])
+
+                self.slice_control.set_shape(h5_obj.shape)
 
         self._plot_data(self.cb_plot_type.currentText())
 
