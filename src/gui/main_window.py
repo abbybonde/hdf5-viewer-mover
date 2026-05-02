@@ -38,6 +38,7 @@ from PyQt6.QtGui import (
     QStandardItemModel,
 )
 from PyQt6.QtWidgets import (
+    QApplication,
     QComboBox,
     QCompleter,
     QDockWidget,
@@ -47,6 +48,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMenu,
+    QMessageBox,
     QPushButton,
     QTableView,
     QTextBrowser,
@@ -56,8 +58,10 @@ from PyQt6.QtWidgets import (
 )
 
 from src.gui.about_page import AboutPage
+from src.gui.copy_move_dialog import CopyMoveDialog
 from src.gui.table_model import DataTable, TableModel
 from src.img.img_path import img_path
+from src.lib_h5.copy_move_ops import copy_hdf5_object, move_hdf5_object
 from src.lib_h5.dataset_types import H5DatasetType
 from src.lib_h5.file_size import file_size_to_str
 
@@ -458,8 +462,97 @@ class MainWindow(QMainWindow):
             menu.addAction(action)
             action.triggered.connect(lambda: self.tree_model_file.removeRow(index.row()))
 
+        # Show Copy/Move actions for group and dataset nodes (i.e., not the root file row)
+        if index.isValid() and index.parent().data() is not None:
+            act_copy = QAction("Copy to…", self)
+            act_move = QAction("Move to…", self)
+            menu.addAction(act_copy)
+            menu.addAction(act_move)
+            act_copy.triggered.connect(lambda: self._handle_copy_to(index))
+            act_move.triggered.connect(lambda: self._handle_move_to(index))
+
         if (viewport := self.tree_view_file.viewport()) is not None:
             menu.popup(viewport.mapToGlobal(pos))
+
+    def _get_path_from_index(self, index: QModelIndex) -> tuple[pathlib.Path, str]:
+        """Return ``(file_path, hdf5_obj_path)`` for a tree-view index."""
+        parents_list = [index.data()]
+        self._tree_recursion(index, parents_list)
+        parents_list.reverse()
+        file_path = pathlib.Path(parents_list[0])
+        obj_path = "".join("/" + part for part in parents_list[1:])
+        return file_path, obj_path
+
+    def _reload_file(self, file_path: pathlib.Path) -> None:
+        """Remove and re-open a file in the tree view to reflect external changes."""
+        for i in range(self.tree_model_file.rowCount()):
+            item = self.tree_model_file.item(i, 0)
+            if item is not None and pathlib.Path(item.text()) == file_path:
+                self.tree_model_file.removeRow(i)
+                break
+        self._open_file(file_path)
+
+    def _run_copy_move(self, index: QModelIndex, operation: str) -> None:
+        """Common logic for both Copy and Move operations."""
+        src_file, src_obj_path = self._get_path_from_index(index)
+        if not src_obj_path:
+            return
+
+        dlg = CopyMoveDialog(self, operation, src_file, src_obj_path)
+        if dlg.exec() != CopyMoveDialog.DialogCode.Accepted:
+            return
+
+        dst_file = dlg.dst_file
+        dst_group = dlg.dst_group
+        dst_name = dlg.dst_name
+
+        if not dst_name:
+            QMessageBox.warning(self, operation, "Destination name must not be empty.")
+            return
+
+        op_fn = copy_hdf5_object if operation == "Copy" else move_hdf5_object
+        overwrite = False
+
+        while True:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                op_fn(src_file, src_obj_path, dst_file, dst_group, dst_name, overwrite=overwrite)
+                QApplication.restoreOverrideCursor()
+                break
+            except FileExistsError as err:
+                QApplication.restoreOverrideCursor()
+                reply = QMessageBox.question(
+                    self,
+                    "Destination Exists",
+                    f"{err}\n\nOverwrite?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+                overwrite = True
+            except Exception as exc:
+                QApplication.restoreOverrideCursor()
+                logging.error(f"{operation} failed: {exc}")
+                QMessageBox.critical(self, f"{operation} Failed", str(exc))
+                return
+
+        # Refresh tree for affected files
+        self._reload_file(src_file)
+        if dst_file.exists() and dst_file.resolve() != src_file.resolve():
+            if dst_file in self.opened_files:
+                self._reload_file(dst_file)
+            else:
+                self._open_file(dst_file)
+
+    @pyqtSlot()
+    def _handle_copy_to(self, index: QModelIndex) -> None:
+        """Handle 'Copy to…' context-menu action."""
+        self._run_copy_move(index, "Copy")
+
+    @pyqtSlot()
+    def _handle_move_to(self, index: QModelIndex) -> None:
+        """Handle 'Move to…' context-menu action."""
+        self._run_copy_move(index, "Move")
 
     @pyqtSlot()
     def _handle_action_open_file(self) -> None:
