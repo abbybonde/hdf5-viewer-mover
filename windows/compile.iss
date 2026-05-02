@@ -3,7 +3,7 @@
 
 #define MyAppName "HDF5 Viewer"
 #define MyAppVersion "0.2.0"
-#define MyAppPublisher "Dennis Lönard"
+#define MyAppPublisher "Dennis LÃ¶nard"
 #define MyAppExeName "main.exe"
 #define MyAppAssocName "HDF5 File"
 #define MyAppAssocExt ".h5"
@@ -27,6 +27,7 @@ LicenseFile=..\LICENSE
 ; Remove the following line to run in administrative install mode (install for all users.)
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
+OutputDir=..\dist
 OutputBaseFilename=HDF5Viewer_Windows_Installer
 Compression=lzma
 SolidCompression=yes
