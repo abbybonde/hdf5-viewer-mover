@@ -25,6 +25,7 @@ def build() -> None:
     build_args = [
         "main.py",
         "--noconfirm",
+        "--onefile",
         "--windowed",
         "--add-data=src/img/*:img",
         "--add-data=LICENSE:.",
@@ -32,8 +33,6 @@ def build() -> None:
     ]
     if sys.platform == "win32":
         build_args.append("--icon=src/img/file.ico")
-    else:
-        build_args.append("--onefile")
 
     PyInstaller.__main__.run(build_args)
 
