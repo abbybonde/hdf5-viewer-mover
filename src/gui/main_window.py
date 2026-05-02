@@ -60,10 +60,17 @@ from PyQt6.QtWidgets import (
 from src.gui.about_page import AboutPage
 from src.gui.copy_move_dialog import CopyMoveDialog
 from src.gui.table_model import DataTable, TableModel
+from src.gui.utilities_dialogs import NewDatasetDialog, NewGroupDialog, RenameDialog
 from src.img.img_path import img_path
 from src.lib_h5.copy_move_ops import copy_hdf5_object, move_hdf5_object
 from src.lib_h5.dataset_types import H5DatasetType
 from src.lib_h5.file_size import file_size_to_str
+from src.lib_h5.group_dataset_ops import (
+    create_hdf5_dataset,
+    create_hdf5_group,
+    delete_hdf5_object,
+    rename_hdf5_object,
+)
 
 
 class MainWindow(QMainWindow):
@@ -454,22 +461,52 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(QPoint)
     def _handle_tree_menu(self, pos: QPoint) -> None:
-        # TODO: reload file button
         menu = QMenu(self)
         index = self.tree_view_file.indexAt(pos)
-        if index.parent().data() is None:
-            action = QAction("Close file", self)
-            menu.addAction(action)
-            action.triggered.connect(lambda: self.tree_model_file.removeRow(index.row()))
 
-        # Show Copy/Move actions for group and dataset nodes (i.e., not the root file row)
-        if index.isValid() and index.parent().data() is not None:
+        if not index.isValid():
+            return
+
+        is_root_file = index.parent().data() is None
+        obj_type = index.sibling(index.row(), 1).data() or ""  # "Group", "Dataset", or "HDF5 File"
+
+        if is_root_file:
+            act_close = QAction("Close File", self)
+            act_reload = QAction("Reload File", self)
+            menu.addAction(act_close)
+            menu.addAction(act_reload)
+            act_close.triggered.connect(lambda: self.tree_model_file.removeRow(index.row()))
+            act_reload.triggered.connect(lambda: self._handle_reload_from_index(index))
+            menu.addSeparator()
+            act_new_grp = QAction("New Group…", self)
+            act_new_ds = QAction("New Dataset…", self)
+            menu.addAction(act_new_grp)
+            menu.addAction(act_new_ds)
+            act_new_grp.triggered.connect(lambda: self._handle_new_group(index))
+            act_new_ds.triggered.connect(lambda: self._handle_new_dataset(index))
+        else:
             act_copy = QAction("Copy to…", self)
             act_move = QAction("Move to…", self)
+            act_rename = QAction("Rename…", self)
+            act_delete = QAction("Delete", self)
             menu.addAction(act_copy)
             menu.addAction(act_move)
+            menu.addSeparator()
+            menu.addAction(act_rename)
+            menu.addAction(act_delete)
             act_copy.triggered.connect(lambda: self._handle_copy_to(index))
             act_move.triggered.connect(lambda: self._handle_move_to(index))
+            act_rename.triggered.connect(lambda: self._handle_rename(index))
+            act_delete.triggered.connect(lambda: self._handle_delete(index))
+
+            if obj_type == "Group":
+                menu.addSeparator()
+                act_new_grp = QAction("New Group…", self)
+                act_new_ds = QAction("New Dataset…", self)
+                menu.addAction(act_new_grp)
+                menu.addAction(act_new_ds)
+                act_new_grp.triggered.connect(lambda: self._handle_new_group(index))
+                act_new_ds.triggered.connect(lambda: self._handle_new_dataset(index))
 
         if (viewport := self.tree_view_file.viewport()) is not None:
             menu.popup(viewport.mapToGlobal(pos))
@@ -543,6 +580,108 @@ class MainWindow(QMainWindow):
                 self._reload_file(dst_file)
             else:
                 self._open_file(dst_file)
+
+    def _handle_reload_from_index(self, index: QModelIndex) -> None:
+        """Reload the file represented by a root-level tree index."""
+        file_path = pathlib.Path(index.data())
+        self._reload_file(file_path)
+
+    @pyqtSlot()
+    def _handle_rename(self, index: QModelIndex) -> None:
+        """Handle 'Rename…' context-menu action."""
+        file_path, obj_path = self._get_path_from_index(index)
+        if not obj_path:
+            return
+        current_name = obj_path.rsplit("/", 1)[-1]
+        dlg = RenameDialog(self, current_name)
+        if dlg.exec() != RenameDialog.DialogCode.Accepted:
+            return
+        new_name = dlg.new_name
+        if not new_name:
+            QMessageBox.warning(self, "Rename", "Name must not be empty.")
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            rename_hdf5_object(file_path, obj_path, new_name)
+        except Exception as exc:
+            logging.error(f"Rename failed: {exc}")
+            QMessageBox.critical(self, "Rename Failed", str(exc))
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._reload_file(file_path)
+
+    @pyqtSlot()
+    def _handle_delete(self, index: QModelIndex) -> None:
+        """Handle 'Delete' context-menu action."""
+        file_path, obj_path = self._get_path_from_index(index)
+        if not obj_path:
+            return
+        reply = QMessageBox.question(
+            self,
+            "Confirm Delete",
+            f"Delete '{obj_path}' from '{file_path.name}'?\n\nThis cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            delete_hdf5_object(file_path, obj_path)
+        except Exception as exc:
+            logging.error(f"Delete failed: {exc}")
+            QMessageBox.critical(self, "Delete Failed", str(exc))
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._reload_file(file_path)
+
+    @pyqtSlot()
+    def _handle_new_group(self, index: QModelIndex) -> None:
+        """Handle 'New Group…' context-menu action."""
+        file_path, obj_path = self._get_path_from_index(index)
+        parent_path = obj_path if obj_path else "/"
+        dlg = NewGroupDialog(self, parent_path)
+        if dlg.exec() != NewGroupDialog.DialogCode.Accepted:
+            return
+        name = dlg.name
+        if not name:
+            QMessageBox.warning(self, "New Group", "Name must not be empty.")
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            create_hdf5_group(file_path, parent_path, name)
+        except Exception as exc:
+            logging.error(f"Create group failed: {exc}")
+            QMessageBox.critical(self, "New Group Failed", str(exc))
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._reload_file(file_path)
+
+    @pyqtSlot()
+    def _handle_new_dataset(self, index: QModelIndex) -> None:
+        """Handle 'New Dataset…' context-menu action."""
+        file_path, obj_path = self._get_path_from_index(index)
+        parent_path = obj_path if obj_path else "/"
+        dlg = NewDatasetDialog(self, parent_path)
+        if dlg.exec() != NewDatasetDialog.DialogCode.Accepted:
+            return
+        name = dlg.name
+        if not name:
+            QMessageBox.warning(self, "New Dataset", "Name must not be empty.")
+            return
+        try:
+            shape = dlg.shape
+        except ValueError as exc:
+            QMessageBox.warning(self, "New Dataset", f"Invalid shape: {exc}")
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            create_hdf5_dataset(file_path, parent_path, name, shape, dlg.dtype, dlg.fill_value)
+        except Exception as exc:
+            logging.error(f"Create dataset failed: {exc}")
+            QMessageBox.critical(self, "New Dataset Failed", str(exc))
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._reload_file(file_path)
 
     @pyqtSlot()
     def _handle_copy_to(self, index: QModelIndex) -> None:
