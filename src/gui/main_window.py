@@ -536,19 +536,30 @@ class MainWindow(QMainWindow):
         return file_path, obj_path
 
     def _reload_file(self, file_path: pathlib.Path) -> None:
-        """Remove and re-open a file in the tree view to reflect external changes."""
+        """Refresh a file's tree node in-place without removing and re-adding the row.
+
+        Updating in-place means the row never disappears from the tree — if the
+        h5py read fails for any reason the existing data stays visible rather than
+        the whole entry being deleted.
+        """
         for i in range(self.tree_model_file.rowCount()):
             item = self.tree_model_file.item(i, 0)
             if item is not None and pathlib.Path(item.text()) == file_path:
-                self.tree_model_file.removeRow(i)
-                break
+                # Wipe children and repopulate from disk
+                item.removeRows(0, item.rowCount())
+                try:
+                    with h5py.File(file_path, "r") as f:
+                        self._hdf5_recursion(hdf5_object=f, root=item, parent=item)
+                except Exception as err:
+                    logging.warning(f"Failed to reload '{file_path}': {err}")
+                    return
+                # Expand the node so the updated contents are immediately visible
+                source_idx = self.tree_model_file.index(i, 0)
+                proxy_idx = self.tree_model_file_proxy.mapFromSource(source_idx)
+                self.tree_view_file.expand(proxy_idx)
+                return
+        # File not currently in the tree — open it fresh
         self._open_file(file_path)
-        # Expand the re-added file node so datasets are visible immediately
-        new_source_row = self.tree_model_file.rowCount() - 1
-        if new_source_row >= 0:
-            source_idx = self.tree_model_file.index(new_source_row, 0)
-            proxy_idx = self.tree_model_file_proxy.mapFromSource(source_idx)
-            self.tree_view_file.expand(proxy_idx)
 
     def _run_copy_move(self, index: QModelIndex, operation: str) -> None:
         """Common logic for both Copy and Move operations."""
