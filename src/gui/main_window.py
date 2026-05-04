@@ -44,6 +44,7 @@ from PyQt6.QtWidgets import (
     QDockWidget,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLineEdit,
     QMainWindow,
@@ -58,7 +59,8 @@ from PyQt6.QtWidgets import (
 )
 
 from src.gui.about_page import AboutPage
-from src.gui.copy_move_dialog import CopyMoveDialog
+from src.gui.copy_move_dialog import CopyMoveDialog, MultiCopyDialog
+from src.gui.hdf5_tree_view import HDF5TreeView
 from src.gui.slice_control import SliceControlWidget
 from src.gui.table_model import DataTable, TableModel
 from src.gui.utilities_dialogs import NewDatasetDialog, NewGroupDialog, RenameDialog
@@ -113,7 +115,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dock_plot)
 
         # Center Layout
-        self.tree_view_file = QTreeView()
+        self.tree_view_file = HDF5TreeView()
         self.tree_view_file.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree_view_file.customContextMenuRequested.connect(self._handle_tree_menu)
         self.tree_model_file = QStandardItemModel()
@@ -124,8 +126,62 @@ class MainWindow(QMainWindow):
         self.tree_model_file_proxy.setSourceModel(self.tree_model_file)
         self.tree_view_file.setModel(self.tree_model_file_proxy)
         self.tree_view_file.setColumnWidth(0, 500)
-        self.tree_view_file.setAcceptDrops(True)
         self.tree_view_file.clicked.connect(self._handle_item_changed)
+        self.tree_view_file.hdf5_move_requested.connect(self._handle_drag_drop_move)
+
+        # Operation button bar
+        def _vsep() -> QFrame:
+            f = QFrame()
+            f.setFrameShape(QFrame.Shape.VLine)
+            f.setFrameShadow(QFrame.Shadow.Sunken)
+            return f
+
+        self.btn_new_group = QPushButton("+ Group")
+        self.btn_new_group.setToolTip("Create a new group inside the selected item")
+        self.btn_new_group.setEnabled(False)
+        self.btn_new_group.clicked.connect(self._handle_btn_new_group)
+
+        self.btn_new_dataset = QPushButton("+ Dataset")
+        self.btn_new_dataset.setToolTip("Create a new dataset inside the selected group")
+        self.btn_new_dataset.setEnabled(False)
+        self.btn_new_dataset.clicked.connect(self._handle_btn_new_dataset)
+
+        self.btn_rename = QPushButton("Rename")
+        self.btn_rename.setToolTip("Rename selected item  [F2]")
+        self.btn_rename.setEnabled(False)
+        self.btn_rename.clicked.connect(self._handle_btn_rename)
+
+        self.btn_delete = QPushButton("Delete")
+        self.btn_delete.setToolTip("Delete selected item  [Del]")
+        self.btn_delete.setEnabled(False)
+        self.btn_delete.clicked.connect(self._handle_btn_delete)
+
+        self.btn_copy_to = QPushButton("Copy To…")
+        self.btn_copy_to.setToolTip("Copy selected item to another location")
+        self.btn_copy_to.setEnabled(False)
+        self.btn_copy_to.clicked.connect(self._handle_btn_copy)
+
+        self.btn_move_to = QPushButton("Move To…")
+        self.btn_move_to.setToolTip("Move selected item to another location")
+        self.btn_move_to.setEnabled(False)
+        self.btn_move_to.clicked.connect(self._handle_btn_move)
+
+        lyt_ops = QHBoxLayout()
+        lyt_ops.setSpacing(4)
+        lyt_ops.setContentsMargins(0, 2, 0, 2)
+        lyt_ops.addWidget(self.btn_new_group)
+        lyt_ops.addWidget(self.btn_new_dataset)
+        lyt_ops.addWidget(_vsep())
+        lyt_ops.addWidget(self.btn_rename)
+        lyt_ops.addWidget(self.btn_delete)
+        lyt_ops.addWidget(_vsep())
+        lyt_ops.addWidget(self.btn_copy_to)
+        lyt_ops.addWidget(self.btn_move_to)
+        lyt_ops.addStretch()
+
+        # Keyboard shortcuts for common operations
+        QShortcut(QKeySequence(Qt.Key.Key_F2), self).activated.connect(self._handle_btn_rename)
+        QShortcut(QKeySequence(Qt.Key.Key_Delete), self).activated.connect(self._handle_btn_delete)
 
         self.btn_filter_regex = QPushButton("RegExp")
         self.btn_filter_regex.setCheckable(True)
@@ -157,6 +213,7 @@ class MainWindow(QMainWindow):
         self.slice_control.sliceChanged.connect(lambda: self._plot_data(self.cb_plot_type.currentText()))
 
         lyt_file_tree = QVBoxLayout()
+        lyt_file_tree.addLayout(lyt_ops)
         lyt_file_tree.addWidget(self.tree_view_file)
         lyt_file_tree.addLayout(lyt_filter)
         lyt_file_tree.addLayout(lyt_plot_type)
@@ -396,6 +453,115 @@ class MainWindow(QMainWindow):
             self._open_file(pathlib.Path(file))
         event.acceptProposedAction()
 
+    # ----- Button / keyboard helpers ----- #
+
+    def _current_index(self) -> QModelIndex:
+        """Column-0 proxy index of the currently selected tree item, or invalid."""
+        idxs = self.tree_view_file.selectedIndexes()
+        if not idxs:
+            return QModelIndex()
+        return idxs[0].sibling(idxs[0].row(), 0)
+
+    def _update_buttons(self, index: QModelIndex) -> None:
+        """Enable or disable operation buttons based on what is selected."""
+        if not index.isValid():
+            for btn in (self.btn_new_group, self.btn_new_dataset,
+                        self.btn_rename, self.btn_delete,
+                        self.btn_copy_to, self.btn_move_to):
+                btn.setEnabled(False)
+            return
+        is_file_root = index.parent().data() is None
+        obj_type = index.sibling(index.row(), 1).data() or ""
+        is_group_like = is_file_root or obj_type == "Group"
+        is_hdf5_obj = not is_file_root
+        self.btn_new_group.setEnabled(is_group_like)
+        self.btn_new_dataset.setEnabled(is_group_like)
+        self.btn_rename.setEnabled(is_hdf5_obj)
+        self.btn_delete.setEnabled(is_hdf5_obj)
+        self.btn_copy_to.setEnabled(is_hdf5_obj)
+        self.btn_move_to.setEnabled(is_hdf5_obj)
+
+    def _handle_btn_new_group(self) -> None:
+        idx = self._current_index()
+        if idx.isValid():
+            self._handle_new_group(idx)
+
+    def _handle_btn_new_dataset(self) -> None:
+        idx = self._current_index()
+        if idx.isValid():
+            self._handle_new_dataset(idx)
+
+    def _handle_btn_rename(self) -> None:
+        idx = self._current_index()
+        if idx.isValid() and self.btn_rename.isEnabled():
+            self._handle_rename(idx)
+
+    def _handle_btn_delete(self) -> None:
+        idx = self._current_index()
+        if idx.isValid() and self.btn_delete.isEnabled():
+            self._handle_delete(idx)
+
+    def _handle_btn_copy(self) -> None:
+        idx = self._current_index()
+        if idx.isValid():
+            self._handle_copy_to(idx)
+
+    def _handle_btn_move(self) -> None:
+        idx = self._current_index()
+        if idx.isValid():
+            self._handle_move_to(idx)
+
+    def _handle_drag_drop_move(self, src_idx: QModelIndex, dst_idx: QModelIndex) -> None:
+        """Move (or copy) an HDF5 item dropped onto a group or file root in the tree.
+
+        Same-file drops always move.  Cross-file drops ask the user whether to
+        copy or move before proceeding.
+        """
+        src_file, src_obj_path = self._get_path_from_index(src_idx)
+        if not src_obj_path:
+            return
+        dst_file, dst_obj_path = self._get_path_from_index(dst_idx)
+        dst_group = dst_obj_path if dst_obj_path else "/"
+        src_name = src_obj_path.rsplit("/", 1)[-1]
+
+        # No-op: dropping onto the same parent group in the same file
+        src_parent = src_obj_path.rstrip("/").rsplit("/", 1)[0] or "/"
+        if dst_file.resolve() == src_file.resolve() and dst_group.rstrip("/") == src_parent.rstrip("/"):
+            return
+
+        # For cross-file drops let the user choose Copy vs Move
+        if dst_file.resolve() != src_file.resolve():
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Copy or Move?")
+            msg.setText(
+                f"Drop <b>{src_name}</b> into <b>{dst_file.name}</b> / <b>{dst_group}</b>"
+            )
+            copy_btn = msg.addButton("Copy", QMessageBox.ButtonRole.ActionRole)
+            move_btn = msg.addButton("Move", QMessageBox.ButtonRole.ActionRole)
+            msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+            msg.exec()
+            clicked = msg.clickedButton()
+            if clicked is copy_btn:
+                op_fn = copy_hdf5_object
+                op_label = "Copy"
+            elif clicked is move_btn:
+                op_fn = move_hdf5_object
+                op_label = "Move"
+            else:
+                return
+        else:
+            op_fn = move_hdf5_object
+            op_label = "Move"
+
+        ok = self._perform_op(op_fn, src_file, src_obj_path, dst_file, dst_group, src_name, op_label)
+        if ok:
+            self._reload_file(src_file)
+            if dst_file.resolve() != src_file.resolve():
+                if dst_file in self.opened_files:
+                    self._reload_file(dst_file)
+                else:
+                    self._open_file(dst_file)
+
     # ----- Slots ----- #
     @pyqtSlot(str)
     def _handle_plot_type_changed(self, plot_type: str) -> None:
@@ -407,6 +573,14 @@ class MainWindow(QMainWindow):
         """Update Info of currently selected Item."""
         if index is None:
             return
+
+        # Normalise to column 0 — clicking the Type column would otherwise feed
+        # "Group"/"Dataset" labels into the path-building logic.
+        index = index.sibling(index.row(), 0)
+        if not index.isValid():
+            return
+
+        self._update_buttons(index)
 
         parents_list = [index.data()]
         self._tree_recursion(index, parents_list)
@@ -561,33 +735,17 @@ class MainWindow(QMainWindow):
         # File not currently in the tree — open it fresh
         self._open_file(file_path)
 
-    def _run_copy_move(self, index: QModelIndex, operation: str) -> None:
-        """Common logic for both Copy and Move operations."""
-        src_file, src_obj_path = self._get_path_from_index(index)
-        if not src_obj_path:
-            return
-
-        dlg = CopyMoveDialog(self, operation, src_file, src_obj_path)
-        if dlg.exec() != CopyMoveDialog.DialogCode.Accepted:
-            return
-
-        dst_file = dlg.dst_file
-        dst_group = dlg.dst_group
-        dst_name = dlg.dst_name
-
-        if not dst_name:
-            QMessageBox.warning(self, operation, "Destination name must not be empty.")
-            return
-
-        op_fn = copy_hdf5_object if operation == "Copy" else move_hdf5_object
+    def _perform_op(self, op_fn, src_file: pathlib.Path, src_obj_path: str,
+                    dst_file: pathlib.Path, dst_group: str, dst_name: str,
+                    label: str) -> bool:
+        """Execute a copy/move with overwrite confirmation loop. Returns True on success."""
         overwrite = False
-
         while True:
             QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
             try:
                 op_fn(src_file, src_obj_path, dst_file, dst_group, dst_name, overwrite=overwrite)
                 QApplication.restoreOverrideCursor()
-                break
+                return True
             except FileExistsError as err:
                 QApplication.restoreOverrideCursor()
                 reply = QMessageBox.question(
@@ -597,21 +755,73 @@ class MainWindow(QMainWindow):
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 )
                 if reply != QMessageBox.StandardButton.Yes:
-                    return
+                    return False
                 overwrite = True
+            except ValueError:
+                QApplication.restoreOverrideCursor()
+                return False  # circular / same-location — silently ignore
             except Exception as exc:
                 QApplication.restoreOverrideCursor()
-                logging.error(f"{operation} failed: {exc}")
-                QMessageBox.critical(self, f"{operation} Failed", str(exc))
-                return
+                logging.error(f"{label} failed: {exc}")
+                QMessageBox.critical(self, f"{label} Failed", str(exc))
+                return False
 
-        # Refresh tree for affected files
-        self._reload_file(src_file)
-        if dst_file.exists() and dst_file.resolve() != src_file.resolve():
-            if dst_file in self.opened_files:
-                self._reload_file(dst_file)
-            else:
-                self._open_file(dst_file)
+    def _run_copy_move(self, index: QModelIndex, operation: str) -> None:
+        """Common logic for Copy and Move button/menu actions.
+
+        Copy uses MultiCopyDialog (one or more destination files).
+        Move uses CopyMoveDialog (single destination).
+        """
+        src_file, src_obj_path = self._get_path_from_index(index)
+        if not src_obj_path:
+            return
+
+        if operation == "Copy":
+            dlg = MultiCopyDialog(self, src_file, src_obj_path)
+            if dlg.exec() != MultiCopyDialog.DialogCode.Accepted:
+                return
+            dst_files = dlg.dst_files
+            dst_group = dlg.dst_group
+            dst_name = dlg.dst_name
+            if not dst_name:
+                QMessageBox.warning(self, "Copy", "Destination name must not be empty.")
+                return
+            if not dst_files:
+                QMessageBox.warning(self, "Copy", "No destination files selected.")
+                return
+            src_reloaded = False
+            for dst_file in dst_files:
+                ok = self._perform_op(copy_hdf5_object, src_file, src_obj_path,
+                                      dst_file, dst_group, dst_name, "Copy")
+                if ok:
+                    if dst_file.resolve() == src_file.resolve():
+                        if not src_reloaded:
+                            self._reload_file(src_file)
+                            src_reloaded = True
+                    else:
+                        if dst_file in self.opened_files:
+                            self._reload_file(dst_file)
+                        else:
+                            self._open_file(dst_file)
+        else:
+            dlg = CopyMoveDialog(self, operation, src_file, src_obj_path)
+            if dlg.exec() != CopyMoveDialog.DialogCode.Accepted:
+                return
+            dst_file = dlg.dst_file
+            dst_group = dlg.dst_group
+            dst_name = dlg.dst_name
+            if not dst_name:
+                QMessageBox.warning(self, operation, "Destination name must not be empty.")
+                return
+            ok = self._perform_op(move_hdf5_object, src_file, src_obj_path,
+                                  dst_file, dst_group, dst_name, operation)
+            if ok:
+                self._reload_file(src_file)
+                if dst_file.resolve() != src_file.resolve():
+                    if dst_file in self.opened_files:
+                        self._reload_file(dst_file)
+                    else:
+                        self._open_file(dst_file)
 
     def _handle_reload_from_index(self, index: QModelIndex) -> None:
         """Reload the file represented by a root-level tree index."""
